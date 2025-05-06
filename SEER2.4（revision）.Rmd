@@ -1,0 +1,696 @@
+---
+title: "seer"
+output: html_document
+date: "2024-12-21"
+---
+
+```{r,message=FALSE}
+library(openxlsx)
+library(here)
+library(mice)
+```
+#重命名变量
+```{r}
+rm(list=ls())#清空所有变量
+seer <- read.xlsx(here("seer.xlsx"))
+
+
+names(seer)[names(seer)=="Patient.ID"] <- "ID"
+names(seer)[names(seer)=="Marital.status.at.diagnosis"] <- "Marital_status"
+names(seer)[names(seer) == "Age.recode.with.<1.year.olds"] <- "Age"
+names(seer)[names(seer)=="Race.recode.(White,.Black,.Other)"] <- "Race"
+names(seer)[names(seer)=="Primary.Site.-.labeled"] <- "Primary_site"
+names(seer)[names(seer)=="ICD-O-3.Hist/behav,.malignant"] <- "Histology"
+names(seer)[names(seer)=="Summary.stage.2000.(1998-2017)"] <- "Tumor_stage"
+names(seer)[names(seer)=="Grade.Recode.(thru.2017)"] <- "Differentiation"
+names(seer)[names(seer)=="RX.Summ--Surg.Prim.Site.(1998+)"] <- "PrimarySiteSurgeryType"
+names(seer)[names(seer)=="RX.Summ--Scope.Reg.LN.Sur.(2003+)"]<-"RegionalLNSurgeryExtent"
+names(seer)[names(seer)=="Radiation.recode"] <- "Radiotherapy"
+names(seer)[names(seer)=="Chemotherapy.recode.(yes,.no/unk)"] <- "Chemotherapy"
+names(seer)[names(seer)=="CS.tumor.size.(2004-2015)"] <- "Tumor_size"
+names(seer)[names(seer)=="Total.number.of.in.situ/malignant.tumors.for.patient"]<-"CancerCountInSituMalignant"
+names(seer)[names(seer) == "Survival.months"] <- "time"
+names(seer)[names(seer)=="Vital.status.recode.(study.cutoff.used)"] <- "overalldeath"
+names(seer)[names(seer) == "SEER.cause-specific.death.classification"] <-"event"
+
+
+#保存变量重命名后的文件
+save(seer,file = here("output","seer.Rdata"))
+write.csv(seer,file =here("output","seer.csv"),row.names = FALSE)
+```
+
+#纳排标准（删除了有缺失值的变量）
+```{r}
+rm(list=ls())#清空所有变量
+load(here("output", "seer.Rdata"))
+
+
+
+#筛选出仅因CC死亡的
+table(seer$event)
+
+#删除死因不明的患者
+seer <- subset(seer,seer$event!="Dead (missing/unknown COD)")#N=63
+
+#将仅因CC死亡的患者标记为"Dead"
+seer$event[seer$event == "Dead (attributable to this cancer dx)"] <- "Dead"
+
+#目前还存活的患者
+seer$event[
+  seer$event=="Alive or dead of other cause" &
+  seer$overalldeath=="Alive"] <- "Alive"
+
+#删去因其他原因死去的患者
+seer <- subset(seer,seer$event!="Alive or dead of other cause")#N=979
+
+#删去全因死亡的列
+seer$overalldeath <- NULL
+
+## 生存死亡状态01转换,死亡事件发生为1
+seer$event <- ifelse(seer$event=='Alive',0,1)
+
+
+
+
+# 限制观察期为五年（60个月）
+table(seer$time)
+
+#删除生存时间不明的患者
+seer <- subset(seer,seer$time!="Unknown")#N=48
+
+# seer$Survival.months <- replace(seer$Survival.months,
+#                                             seer$Survival.months == "Unknown", NA)
+
+seer$time <- as.numeric(seer$time)
+
+seer <- subset(seer,seer$time>0)#生存时间等于0的N=153
+
+# 生存时间大于60的记录，将对应的event设置为0
+seer$event <- ifelse(seer$time > 60, 0, seer$event)
+
+# 然后，将所有生存时间大于60的记录截尾为60
+seer$time <- ifelse(seer$time > 60, 60, seer$time)
+
+
+
+#清空各变量的Unknown值
+table(seer$Marital_status)#婚姻
+seer <- subset(seer,seer$Marital_status!='Unknown')
+
+table(seer$Race)#种族
+seer <- subset(seer,seer$Race!='Unknown')
+
+table (seer$Tumor_stage)#肿瘤情况
+seer <- subset(seer,seer$Tumor_stage!='Unknown/unstaged')
+
+table(seer$RegionalLNSurgeryExtent)#区域淋巴结手术
+seer <- subset(seer,seer$RegionalLNSurgeryExtent!='Unknown or not applicable')
+
+table(seer$Tumor_size)#肿瘤尺寸
+seer <- subset(seer,seer$Tumor_size!=999)#999=Unknow
+
+table(seer$Differentiation)#肿瘤分级
+seer <- subset(seer,seer$Differentiation!='Unknown')
+
+table(seer$PrimarySiteSurgeryType)#原发部位手术
+seer <- subset(seer,seer$PrimarySiteSurgeryType!=99)#99=Unknow
+
+
+
+#保存经过纳排标准筛选后的文件
+save(seer,file = here("output","seer.Rdata"))
+write.csv(seer,file =here("output","seer.csv"),row.names = FALSE)
+```
+
+#数据分组
+```{r}
+rm(list=ls())#清空所有变量
+load(here("output", "seer.Rdata"))# 加载数据
+
+
+#对年龄进行重分组
+table(seer$Age,useNA = "always")
+# 使用gsub函数去除年龄字符串中的" years"部分，以便提取数值
+seer$Age <- gsub(" years", "", seer$Age)
+
+# 对"85+ years"这个特殊情况进行处理，使其能够被包含在"70+ years"类别中
+seer$Age <- gsub("\\+", "", seer$Age)
+
+# 将年龄字符串转换为数值区间的下限
+seer$Age_Num <- as.numeric(sub("-.*", "", seer$Age))
+
+# 使用cut函数根据新的层次划分年龄组
+seer$Age_Group <- cut(seer$Age_Num, 
+                      breaks = c(19, 29, 39, 49, 59, 69, Inf), 
+                      labels = c("20-29 years", "30-39 years", "40-49 years", 
+                                 "50-59 years", "60-69 years", "70+ years"), 
+                      right = FALSE)
+
+# 查看新的层次结构
+levels(seer$Age_Group)
+
+# 使用table函数检查每个年龄组的计数，包括NA值
+table(seer$Age_Group, useNA = "always")
+
+seer$Age <- seer$Age_Group
+#删除新增的列
+seer$Age_Num <- NULL
+seer$Age_Group <- NULL
+
+
+
+
+#对婚姻状态进行分组
+table(seer$Marital_status,useNA = "always")
+seer$Marital_status <- as.factor(seer$Marital_status)
+levels(seer$Marital_status)
+levels(seer$Marital_status)[levels(seer$Marital_status) == "Married (including common law)"] <- "Married"
+levels(seer$Marital_status)[levels(seer$Marital_status) == "Single (never married)"] <- "Single"
+levels(seer$Marital_status)[levels(seer$Marital_status)=="Unmarried or Domestic Partner"] <- "Unmarried"
+
+
+
+#对种族进行重分组
+table(seer$Race,useNA = "always")
+seer$Race <- as.factor(seer$Race)
+levels(seer$Race)
+levels(seer$Race)[levels(seer$Race)=="Other (American Indian/AK Native, Asian/Pacific Islander)"]<- "Other"
+
+
+
+#原发手术点
+table(seer$Primary_site,useNA = "always")
+seer$Primary_site <- as.factor(seer$Primary_site)
+levels(seer$Primary_site)
+levels(seer$Primary_site) <- c(
+  "Endocervix", 
+  "Exocervix", 
+  "Overlapping lesion", 
+  "Cervix uteri"
+)
+
+# 查看重命名后的结果
+levels(seer$Primary_site)
+
+
+
+
+#对肿瘤类型进行重分组
+table(seer$Histology,useNA = "always")
+seer$Histology <- as.factor(seer$Histology)
+levels(seer$Histology)
+# 使用 grepl 函数检测是否包含特定的癌症类型
+is_SquamousCellCarcinoma <- grepl("Squamous cell carcinoma", seer$Histology, ignore.case = TRUE)
+is_Adenocarcinoma <- grepl("Adenocarcinoma", seer$Histology, ignore.case = TRUE)
+is_AdenosquamousCarcinoma <- grepl("Adenosquamous carcinoma", seer$Histology, ignore.case = TRUE)
+is_NeuroendocrineCarcinoma <- grepl("neuroendocrine carcinoma", seer$Histology, ignore.case = TRUE)
+
+# 修改原始列的值，区分不同类型的癌症
+seer$Histology <- ifelse(
+  is_SquamousCellCarcinoma, 
+  "Squamous Cell Carcinoma",
+  ifelse(
+    is_Adenocarcinoma, 
+    "Adenocarcinoma",
+    ifelse(
+      is_AdenosquamousCarcinoma,
+      "Adenosquamous Carcinoma",
+      ifelse(
+        is_NeuroendocrineCarcinoma, 
+        "Neuroendocrine Carcinoma", 
+        "Other"
+      )
+    )
+  )
+)
+
+seer$Histology <- as.factor(seer$Histology)
+# 检查修改后的癌症类型分布
+table(seer$Histology,useNA = "always")
+
+
+
+
+
+
+
+table(seer$Tumor_stage,useNA = "always")
+seer$Tumor_stage <- as.factor(seer$Tumor_stage)
+levels(seer$Tumor_stage)
+
+
+
+
+
+##Differentiation 列
+table(seer$Differentiation,useNA = "always")
+seer$Differentiation <- as.factor(seer$Differentiation)
+levels(seer$Differentiation)[levels(seer$Differentiation)=="Well differentiated; Grade I"] <- "Grade I (Well differentiated)"
+levels(seer$Differentiation)[levels(seer$Differentiation)=="Moderately differentiated; Grade II"] <- "Grade II (Moderately differentiated)"
+levels(seer$Differentiation)[levels(seer$Differentiation)=="Poorly differentiated; Grade III"] <- "Grade III (Poorly differentiated)"
+levels(seer$Differentiation)[levels(seer$Differentiation)=="Undifferentiated; anaplastic; Grade IV"] <- "Grade IV (Undifferentiated/anaplastic)"
+
+# 检查修改后的层次名称
+levels(seer$Differentiation)
+
+
+
+
+
+#原发位点手术类型
+table(seer$PrimarySiteSurgeryType,useNA = "always")
+
+# 复制原始数据
+surgps <- seer$PrimarySiteSurgeryType
+
+# 创建映射
+grade_mapping <- c(
+  "00" = "None",
+  "10-19" = "Destruction",
+  "20-80" = "Resection",
+  "90" = "Surgery",
+  "98" = "Special",
+  "99" = "Unknown"
+)
+
+# 创建一个函数来转换数值代码到文字描述
+convert_surgps_code <- function(code) {
+  if (code == 0) {
+    return(grade_mapping["00"])
+  } else if (code %in% 10:19) {
+    return(grade_mapping["10-19"])
+  } else if (code %in% 20:80) {
+    return(grade_mapping["20-80"])
+  } else if (code == 90) {
+    return(grade_mapping["90"])
+  } else if (code == 98) {
+    return(grade_mapping["98"])
+  } else if (code == 99 || is.na(code)) {
+    return(grade_mapping["99"])
+  } else {
+    return(NA) # 对于不在映射中的代码，返回NA
+  }
+}
+
+# 应用函数到surgps
+surgps_descriptions <- sapply(surgps, convert_surgps_code)
+
+seer$PrimarySiteSurgeryType <- surgps_descriptions
+
+# 查看转换结果
+table(seer$PrimarySiteSurgeryType,useNA = "always")
+seer$PrimarySiteSurgeryType <- as.factor(seer$PrimarySiteSurgeryType)
+
+# 直接替换因子水平 "None" 为 "NoSurgery"
+levels(seer$PrimarySiteSurgeryType)[levels(seer$PrimarySiteSurgeryType) == "None"] <- "NoSurgery"
+
+# 确认变更
+levels(seer$PrimarySiteSurgeryType)
+
+
+
+
+
+#对区域淋巴结手术进行分组
+table(seer$RegionalLNSurgeryExtent,useNA = "always")
+
+# 首先，修改 None 值为 NoLymphNodesRemoved
+seer$RegionalLNSurgeryExtent[seer$RegionalLNSurgeryExtent == "None"] <- "NoLymphNodesRemoved"
+
+# 重命名和合并层次
+seer$Scope_Reg_LN <- seer$RegionalLNSurgeryExtent
+# 先将因子转换为字符型，以避免因子层次的问题
+# seer$Scope_Reg_LN <- as.character(seer$Scope_Reg_LN)
+
+# 合并为 "Lymph nodes removed"
+seer$Scope_Reg_LN[seer$Scope_Reg_LN %in% c(
+  "1 to 3 regional lymph nodes removed", 
+  "4 or more regional lymph nodes removed",
+  "Sentinel node biopsy and lym nd removed different times",
+  "Sentinel node biopsy and lym nd removed same/unstated time"
+)] <- "Lymph nodes removed"
+
+# 合并为 "Sentinel lymph node biopsy"
+seer$Scope_Reg_LN[seer$Scope_Reg_LN %in% c(
+  "Biopsy or aspiration of regional lymph node, NOS"
+)] <- "Sentinel lymph node biopsy"
+
+# 合并为 "Unknown or not applicable"
+seer$Scope_Reg_LN[seer$Scope_Reg_LN == "Number of regional lymph nodes removed unknown"] <- "Unknown or not applicable"
+
+# 更新因子层次
+seer$Scope_Reg_LN <- factor(seer$Scope_Reg_LN)
+levels(seer$Scope_Reg_LN)
+
+table(seer$Scope_Reg_LN,useNA = "always")
+seer$RegionalLNSurgeryExtent <- seer$Scope_Reg_LN
+seer$Scope_Reg_LN <- NULL
+
+# 检查修改后的层次名称
+levels(seer$RegionalLNSurgeryExtent)
+
+
+
+
+
+
+
+
+
+# 重新分组放疗情况 RT 列
+table(seer$Radiotherapy,useNA = "always")
+seer$Radiotherapy <- as.factor(seer$Radiotherapy)
+levels(seer$Radiotherapy)
+seer$Radiotherapy <- factor(ifelse(seer$Radiotherapy %in% c(
+  "Beam radiation", 
+  "Combination of beam with implants or isotopes",
+  "Radioactive implants (includes brachytherapy) (1988+)",
+  "Radioisotopes (1988+)"
+), "Radiation therapy", 
+ifelse(seer$Radiotherapy %in% c(
+  "None/Unknown", 
+  "Recommended, unknown if administered", 
+  "Refused (1988+)", 
+  "Radiation, NOS  method or source not specified"
+), "No radiation or unknown", seer$Radiotherapy)))
+
+# 检查修改后的层次名称
+levels(seer$Radiotherapy)
+
+
+
+
+
+
+#化疗
+table(seer$Chemotherapy,useNA = "always")
+seer$Chemotherapy <- as.factor(seer$Chemotherapy)
+levels(seer$Chemotherapy)
+
+
+
+
+
+
+#对tumor size进行重分组，分为>40的和小于等于40的
+# 检查原始的Tumor_size分布
+table(seer$Tumor_siz,useNA = "always")
+seer$Tumor_size <- ifelse(seer$Tumor_size == 999, 
+                          "Unknown",
+                          ifelse(seer$Tumor_size == 990 | seer$Tumor_size == 888, 
+                                 "other", 
+                                 ifelse(seer$Tumor_size <= 40, 
+                                        "<= 40mm", 
+                                        "> 40mm")))
+
+# 将修改后的列转换为因子类型
+seer$Tumor_size <- as.factor(seer$Tumor_size)
+levels(seer$Tumor_size)
+
+
+
+
+
+
+
+#对肿瘤数量进行重分组
+table(seer$CancerCountInSituMalignant,useNA = "always")
+seer$CancerCountInSituMalignant <- ifelse(seer$CancerCountInSituMalignant==1,'=1','>1')
+seer$CancerCountInSituMalignant <- as.factor(seer$CancerCountInSituMalignant)
+levels(seer$CancerCountInSituMalignant)
+
+
+
+seer$ID <- NULL
+
+#保存有缺失值的数据
+save(seer,file = here("output","seer.Rdata"))
+write.csv(seer,file =here("output","seer.csv"),row.names = FALSE)
+```
+
+#将纯“Unknown”值替换为NA值
+```{r}
+rm(list=ls())#清空所有变量
+load(here("output", "seer.Rdata"))# 加载数据
+
+
+table(seer$Marital_status, useNA = "always")#婚姻
+seer$Marital_status[seer$Marital_status == "Unknown"] <- NA
+seer$Marital_status <- factor(seer$Marital_status)
+levels(seer$Marital_status)
+
+
+
+table(seer$Age)
+
+
+
+table(seer$Race, useNA = "always")#种族
+seer$Race[seer$Race=="Unknown"] <- NA
+seer$Race <- factor(seer$Race)
+
+
+
+table(seer$Primary_site,useNA = "always")
+
+
+
+table(seer$Histology,useNA = "always")
+
+
+
+table (seer$Tumor_stage, useNA = "always")#肿瘤stage
+
+
+
+
+table(seer$Differentiation, useNA = "always")#肿瘤分级
+seer$Differentiation[seer$Differentiation=='Unknown'] <- NA
+seer$Differentiation <- factor(seer$Differentiation)
+levels(seer$Differentiation)
+
+
+
+
+table(seer$PrimarySiteSurgeryType,useNA = "always")
+seer$PrimarySiteSurgeryType[seer$PrimarySiteSurgeryType=="Unknown"] <- NA
+seer$PrimarySiteSurgeryType <- factor(seer$PrimarySiteSurgeryType)
+levels(seer$PrimarySiteSurgeryType)
+
+
+
+
+
+table(seer$RegionalLNSurgeryExtent, useNA = "always")#区域淋巴结手术
+
+
+
+
+table(seer$Radiotherapy,useNA ="always" )#No radiation or unknown
+
+
+
+table(seer$Chemotherapy,useNA = "always")#"No/Unknown"
+
+
+
+table(seer$Tumor_size, useNA = "always")#肿瘤尺寸
+seer$Tumor_size[seer$Tumor_size=="Unknown"] <- NA
+seer$Tumor_size <- factor(seer$Tumor_size)
+levels(seer$Tumor_size)
+
+
+
+
+table(seer$CancerCountInSituMalignant,useNA = "always")
+
+
+
+
+
+
+
+# 计算每列的缺失值数量
+missing_values <- sapply(seer, function(x) sum(is.na(x)))
+
+# 计算每列的缺失值百分比
+missing_percent <- sapply(seer, function(x) mean(is.na(x))* 100 )
+
+# 创建一个数据框来显示结果
+missing_data <- data.frame(missing_values, missing_percent)
+
+# 打印结果
+print(missing_data)
+
+
+#保存有缺失值的文件
+save(seer,file = here("output","seer.Rdata"))
+write.csv(seer,file =here("output","seer_withoutmissing.csv"),row.names = FALSE)
+```
+
+
+
+#绘制基线表
+```{r}
+rm(list=ls())#清空所有变量
+library(purrr)
+library(dplyr)
+library(gtsummary)
+library(reticulate)
+library(officer)
+library(flextable)
+library(here)
+library(officer)
+
+# 设置文件路径
+directory_path <- file.path(here('未经过smote的五折pkl文件'))
+
+# 获取目录中以.pkl结尾的文件列表
+train_pkl_files <- list.files(directory_path, pattern = "^train_fold_\\d+\\.pkl$", full.names = TRUE)
+test_pkl_files <- list.files(directory_path, pattern = "^test_fold_\\d+\\.pkl$", full.names = TRUE)
+
+# 定义一个函数来转换布尔变量为因子
+convert_bool_to_factor <- function(df) {
+  bool_cols <- sapply(df, is.logical)
+  df[, bool_cols] <- lapply(df[, bool_cols, drop = FALSE], function(x) {
+    factor(x, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  })
+  return(df)
+}
+
+# 新增一个函数，用于将整数变量转换为有序因子
+convert_int_to_ordered_factor <- function(df, ordered_var_names) {
+  for (var_name in ordered_var_names) {
+    if (var_name %in% names(df)) {
+      # 假设这些有序变量的值是从1开始的整数
+      df[[var_name]] <- factor(df[[var_name]], ordered = TRUE)
+    }
+  }
+  return(df)
+}
+
+# 定义已知的有序分类变量的列名
+ordered_var_names <- c("Age",
+                       "Tumor_Stage",
+                       "Differentiation",
+                       "Tumor_Size",
+                       "InSitu_Malignant_Cancer_Count")
+
+# 循环遍历每一折
+for (i in seq_along(train_pkl_files)) {
+  # 加载训练集和测试集数据
+  train_data <- py_load_object(train_pkl_files[i])
+  test_data <- py_load_object(test_pkl_files[i])
+
+    # 自动转换布尔变量为因子类型
+  train_data <- convert_bool_to_factor(train_data)
+  test_data <- convert_bool_to_factor(test_data)
+  
+  # 转换整数变量为有序因子
+  train_data <- convert_int_to_ordered_factor(train_data, ordered_var_names)
+  test_data <- convert_int_to_ordered_factor(test_data, ordered_var_names)
+
+  # 为每个数据集添加一个新列以标示它们是训练集还是测试集
+  train_data$dataset <- 'Train'
+  test_data$dataset <- 'Test'
+
+  # 合并训练集和测试集，并确保Train在前，Test在后
+  data_all <- bind_rows(train_data, test_data) %>%
+    mutate(dataset = factor(dataset, levels = c('Train', 'Test'))) # 明确指定levels顺序
+
+  # 使用gtsummary创建基线比较表
+  tab_basecompare <- data_all %>%
+    tbl_summary(
+      by = dataset, # 分组变量，指示训练集或测试集
+      missing = "no", # 不显示缺失值
+      type = list(
+        where(is.factor) ~ "categorical",
+        where(is.numeric) ~ "continuous"
+      ),
+      digits = all_continuous() ~ 3 # 保留所有连续变量3位有效数字
+    ) %>%
+    add_n() %>%
+    add_p(pvalue_fun = ~ style_pvalue(.x, digits = 2)) %>%
+    modify_header(label = "**Variable**") %>%
+    bold_labels() %>%
+    separate_p_footnotes()
+
+
+  # 转换为flextable对象
+  flextable_obj <- as_flex_table(tab_basecompare)
+
+  # 创建 Word 文档对象
+  doc <- read_docx() 
+  
+
+  # 将 flextable 添加到 Word 文档中
+  doc <- body_add_flextable(doc, value = flextable_obj)
+
+  # 保存基线比较表为Word文档
+  word_file <- file.path("output", paste0("baseline_table_fold_", i, ".docx")) # 输出文件夹路径
+  print(doc, target = word_file)
+  
+  # 打印出当前折的基线比较表
+  print(tab_basecompare)
+}
+
+```
+
+
+#生存曲线
+```{r}
+library(survival) # 用于生存分析
+library(survminer) # 用于高级生存图形功能
+library(ggplot2) # 用于数据可视化
+library(here)
+
+# 清空环境变量
+rm(list=ls())
+# 加载数据
+load(here("output", "seer.Rdata"))
+
+# seer$time <- as.numeric(seer$time)
+# seer <- data.frame(lapply(seer, function(x) if(is.character(x)) as.factor(x) else x))
+
+fit <- survfit(Surv(time, event) ~1, data = seer) # 拟合生存模型,1表示不对数据进行分层
+## 绘制生图形
+p1 <- 
+  ggsurvplot(fit = fit,#生存分析模型
+             data = seer,#数据集
+             palette = "npg",#色板
+             pval = T,#显示p值
+             confint = T,#显示置信区间
+             risk.table = T,#风险表
+             fun =  NULL,# 绘制功能函数
+             #"event" plots cumulative events (f(y) = 1-y) 
+             #"cumhaz" plots the cumulative hazard function (f(y) = -log(y))
+             add.all = F,#添加所有的曲线
+             cumevents = F,#累计事件
+             cumcensor = F,#累计截尾
+             surv.median.line = "hv",#中位数线
+             # break.time.by=200,#时间轴刻度间隔
+             # bread.y.by=0.1,#纵坐标刻度间隔
+             # xlim = c(0,800),#横坐标范围
+             # ylim =c(0,1),#纵坐标范围
+             newpage=F,
+             ggtheme = theme_minimal(), # 选择一个主题
+             title = "60-Month Cause-Specific Survival for Cervical Cancer", # 添加图形标题
+             xlab="months"
+             );
+
+
+
+# 打开一个新的图形设备来保存文件
+png(filename = here("output", "survival_curve_with_risk_table.png"), width = 12, height = 6, units = "in", res = 300)
+
+# 再次打印完整的 ggsurvplot 对象到新的图形设备
+print(p1)
+
+# 关闭图形设备，完成保存
+dev.off()
+
+print(p1)
+
+```
+
+
